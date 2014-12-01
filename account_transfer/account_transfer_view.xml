@@ -2,6 +2,27 @@
 <openerp>
 	<data>		
 
+        <record id="view_account_transfer_filter" model="ir.ui.view">
+            <field name="name">view.account.transfer.filter</field>
+            <field name="model">account.transfer</field>
+            <field name="arch" type="xml">
+                <search string="Search Account Transfer">
+					<filter name="today" string="Today's" domain="[('date','=',time.strftime('%%Y-%%m-%%d'))]" help="Today's Transfer"/>
+                    <separator/>
+                    <filter name="draft" string="Draft" domain="[('state','=','draft')]"/>
+                    <filter name="done" string="Confirm" domain="[('state','=','done')]"/>
+                    <filter name="cancel" string="Cancelled" domain="[('state','=','cancel')]"/>
+                    <group expand="0" string="Group By...">
+                        <filter string="Shop" domain="[]" context="{'group_by':'pawn_shop_id'}"/>
+                        <filter string="Source Journal" domain="[]" context="{'group_by':'src_journal_id'}"/>
+                        <filter string="Destination Journal" domain="[]" context="{'group_by':'dst_journal_id'}"/>
+                        <filter string="Status" domain="[]" context="{'group_by':'state'}"/>
+                        <filter string="Date" domain="[]" context="{'group_by':'date'}"/>
+                    </group>
+                </search>
+            </field>
+        </record>
+
 	    <record id="view_account_transfer_tree" model="ir.ui.view">
             <field name="name">Account Transfer List</field>
             <field name="model">account.transfer</field>
