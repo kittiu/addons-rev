@@ -13,7 +13,6 @@
                     <filter name="done" string="Confirm" domain="[('state','=','done')]"/>
                     <filter name="cancel" string="Cancelled" domain="[('state','=','cancel')]"/>
                     <group expand="0" string="Group By...">
-                        <filter string="Shop" domain="[]" context="{'group_by':'pawn_shop_id'}"/>
                         <filter string="Source Journal" domain="[]" context="{'group_by':'src_journal_id'}"/>
                         <filter string="Destination Journal" domain="[]" context="{'group_by':'dst_journal_id'}"/>
                         <filter string="Status" domain="[]" context="{'group_by':'state'}"/>
