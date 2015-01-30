@@ -33,6 +33,7 @@
     "depends": [
         "stock",
         "purchase",
+        "account_anglo_saxon"
     ],
     "demo": [],
     "data": [
