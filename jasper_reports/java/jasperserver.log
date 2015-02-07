@@ -1,5 +1,600 @@
-0    [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
+6    [XML-RPC-0] ERROR net.sf.jasperreports.engine.fill.JRFillSubreport - Fill 764572408: exception
+net.sf.jasperreports.engine.JRException: Error preparing statement for executing the report query : 
+
+select * from
+(
+-- Beginning Balance
+select 1 as sequence, 'ยอดยกมา'::varchar as desc1, ''::varchar as desc2, coalesce(sum(l.debit),0) - coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_move m on m.id = l.move_id
+where
+-- (l.pawn_order_id is not null or l.statement_id is not null)
+l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date < ?
+and m.ref is not null
+UNION
+-- Transfer from Stock
+select 2 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดเข้าจากคลัง' as desc1, '' as desc2, coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Transfer To Stock
+select 3 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดออกไปคลัง' as desc1, '' as desc2, -coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Redeem Amount (only redeemed order)
+select 4 as sequence, 'เงินสดรับจากการไถ่ถอน' as desc1, '' as desc2, null as balance
+union
+select 4.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = false
+and l.account_id in (?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Interest Amount (only redeemed order)
+select 5 as sequence, 'เงินสดรับจากดอกเบี้ย' as desc1, '' as desc2, null as balance
+union
+select 5.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem'
+and l.account_id in (?, ?, ?, ?)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Pawn Amount
+select 6 as sequence, 'เงินสดจ่ายจากการรับจำนำ' as desc1, '' as desc2, null as balance
+union
+select 6.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null
+and l.account_id = ?
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Sales (only expired order)
+select 7 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 7.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Redeem Amount (only expired / extended order)
+select 8 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด (เล้า)' as desc1, '' as desc2, null as balance
+union
+select 8.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = true
+and l.account_id in (?, ?, ?, ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Refund (only expired order)
+select 9 as sequence, 'เงินสดจ่ายจากการคืนทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 9.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Other Income (from Cash Register)
+select 10 as sequence, 'เงินสดรับจากรายได้อื่น' as desc1, '' as desc2, null as balance
+union
+select 10.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+UNION
+-- Other Expense (from Cash Register)
+select 11 as sequence, 'เงินสดจ่ายจากรายจ่ายอื่น' as desc1, '' as desc2, null as balance
+union
+select 11.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+--UNION
+-- Adjustment from Accounting Department
+--select 12 as sequence, desc1::varchar, desc2::varchar as desc2, balance
+--from
+--(select 'รายการปรับปรุงเงินสดจากทางฝ่ายบัญชี' as desc1, '' as desc2, -coalesce(sum(l.debit),0) + -coalesce(sum(l.--credit),0) as balance
+--from account_move_line l
+--where l.statement_id is null and l.pawn_order_id is null
+--and l.id not in (select l.id from account_move_line l join account_voucher av on av.move_id = l.move_id)
+--and l.profit_center = (select profit_center from account_journal where id = ?)
+--and l.pawn_shop_id = ?
+--and l.date = ?
+) a
+-- END
+) a
+order by sequence
+
+
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createStatement(JRJdbcQueryExecuter.java:266)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:157)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.createQueryDatasource(JRFillDataset.java:684)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.initDatasource(JRFillDataset.java:605)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.setParameters(JRBaseFiller.java:1281)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:901)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.fillSubreport(JRFillSubreport.java:609)
+	at net.sf.jasperreports.engine.fill.JRSubreportRunnable.run(JRSubreportRunnable.java:59)
+	at net.sf.jasperreports.engine.fill.JRThreadSubreportRunner.run(JRThreadSubreportRunner.java:205)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: org.postgresql.util.PSQLException: The column index is out of range: 49, number of columns: 48.
+	at org.postgresql.core.v3.SimpleParameterList.bind(SimpleParameterList.java:53)
+	at org.postgresql.core.v3.SimpleParameterList.setLiteralParameter(SimpleParameterList.java:114)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.bindLiteral(AbstractJdbc2Statement.java:2143)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.setInt(AbstractJdbc2Statement.java:1186)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.setStatementParameter(JRJdbcQueryExecuter.java:407)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.setStatementParameter(JRJdbcQueryExecuter.java:283)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createStatement(JRJdbcQueryExecuter.java:258)
+	... 10 more
+47   [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: net.sf.jasperreports.engine.JRException: Error preparing statement for executing the report query : 
+
+select * from
+(
+-- Beginning Balance
+select 1 as sequence, 'ยอดยกมา'::varchar as desc1, ''::varchar as desc2, coalesce(sum(l.debit),0) - coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_move m on m.id = l.move_id
+where
+-- (l.pawn_order_id is not null or l.statement_id is not null)
+l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date < ?
+and m.ref is not null
+UNION
+-- Transfer from Stock
+select 2 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดเข้าจากคลัง' as desc1, '' as desc2, coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Transfer To Stock
+select 3 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดออกไปคลัง' as desc1, '' as desc2, -coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Redeem Amount (only redeemed order)
+select 4 as sequence, 'เงินสดรับจากการไถ่ถอน' as desc1, '' as desc2, null as balance
+union
+select 4.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = false
+and l.account_id in (?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Interest Amount (only redeemed order)
+select 5 as sequence, 'เงินสดรับจากดอกเบี้ย' as desc1, '' as desc2, null as balance
+union
+select 5.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem'
+and l.account_id in (?, ?, ?, ?)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Pawn Amount
+select 6 as sequence, 'เงินสดจ่ายจากการรับจำนำ' as desc1, '' as desc2, null as balance
+union
+select 6.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null
+and l.account_id = ?
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Sales (only expired order)
+select 7 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 7.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Redeem Amount (only expired / extended order)
+select 8 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด (เล้า)' as desc1, '' as desc2, null as balance
+union
+select 8.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = true
+and l.account_id in (?, ?, ?, ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Refund (only expired order)
+select 9 as sequence, 'เงินสดจ่ายจากการคืนทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 9.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Other Income (from Cash Register)
+select 10 as sequence, 'เงินสดรับจากรายได้อื่น' as desc1, '' as desc2, null as balance
+union
+select 10.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+UNION
+-- Other Expense (from Cash Register)
+select 11 as sequence, 'เงินสดจ่ายจากรายจ่ายอื่น' as desc1, '' as desc2, null as balance
+union
+select 11.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+--UNION
+-- Adjustment from Accounting Department
+--select 12 as sequence, desc1::varchar, desc2::varchar as desc2, balance
+--from
+--(select 'รายการปรับปรุงเงินสดจากทางฝ่ายบัญชี' as desc1, '' as desc2, -coalesce(sum(l.debit),0) + -coalesce(sum(l.--credit),0) as balance
+--from account_move_line l
+--where l.statement_id is null and l.pawn_order_id is null
+--and l.id not in (select l.id from account_move_line l join account_voucher av on av.move_id = l.move_id)
+--and l.profit_center = (select profit_center from account_journal where id = ?)
+--and l.pawn_shop_id = ?
+--and l.date = ?
+) a
+-- END
+) a
+order by sequence
+
+
+org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: net.sf.jasperreports.engine.JRException: Error preparing statement for executing the report query : 
+
+select * from
+(
+-- Beginning Balance
+select 1 as sequence, 'ยอดยกมา'::varchar as desc1, ''::varchar as desc2, coalesce(sum(l.debit),0) - coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_move m on m.id = l.move_id
+where
+-- (l.pawn_order_id is not null or l.statement_id is not null)
+l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date < ?
+and m.ref is not null
+UNION
+-- Transfer from Stock
+select 2 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดเข้าจากคลัง' as desc1, '' as desc2, coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Transfer To Stock
+select 3 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดออกไปคลัง' as desc1, '' as desc2, -coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Redeem Amount (only redeemed order)
+select 4 as sequence, 'เงินสดรับจากการไถ่ถอน' as desc1, '' as desc2, null as balance
+union
+select 4.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = false
+and l.account_id in (?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Interest Amount (only redeemed order)
+select 5 as sequence, 'เงินสดรับจากดอกเบี้ย' as desc1, '' as desc2, null as balance
+union
+select 5.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem'
+and l.account_id in (?, ?, ?, ?)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Pawn Amount
+select 6 as sequence, 'เงินสดจ่ายจากการรับจำนำ' as desc1, '' as desc2, null as balance
+union
+select 6.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null
+and l.account_id = ?
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Sales (only expired order)
+select 7 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 7.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Redeem Amount (only expired / extended order)
+select 8 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด (เล้า)' as desc1, '' as desc2, null as balance
+union
+select 8.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = true
+and l.account_id in (?, ?, ?, ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Refund (only expired order)
+select 9 as sequence, 'เงินสดจ่ายจากการคืนทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 9.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Other Income (from Cash Register)
+select 10 as sequence, 'เงินสดรับจากรายได้อื่น' as desc1, '' as desc2, null as balance
+union
+select 10.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+UNION
+-- Other Expense (from Cash Register)
+select 11 as sequence, 'เงินสดจ่ายจากรายจ่ายอื่น' as desc1, '' as desc2, null as balance
+union
+select 11.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+--UNION
+-- Adjustment from Accounting Department
+--select 12 as sequence, desc1::varchar, desc2::varchar as desc2, balance
+--from
+--(select 'รายการปรับปรุงเงินสดจากทางฝ่ายบัญชี' as desc1, '' as desc2, -coalesce(sum(l.debit),0) + -coalesce(sum(l.--credit),0) as balance
+--from account_move_line l
+--where l.statement_id is null and l.pawn_order_id is null
+--and l.id not in (select l.id from account_move_line l join account_voucher av on av.move_id = l.move_id)
+--and l.profit_center = (select profit_center from account_journal where id = ?)
+--and l.pawn_shop_id = ?
+--and l.date = ?
+) a
+-- END
+) a
+order by sequence
+
+
 	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
 	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
 	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
@@ -7,26 +602,211 @@ org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method exec
 	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
 	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
 	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
+Caused by: net.sf.jasperreports.engine.JRRuntimeException: net.sf.jasperreports.engine.JRException: Error preparing statement for executing the report query : 
+
+select * from
+(
+-- Beginning Balance
+select 1 as sequence, 'ยอดยกมา'::varchar as desc1, ''::varchar as desc2, coalesce(sum(l.debit),0) - coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_move m on m.id = l.move_id
+where
+-- (l.pawn_order_id is not null or l.statement_id is not null)
+l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date < ?
+and m.ref is not null
+UNION
+-- Transfer from Stock
+select 2 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดเข้าจากคลัง' as desc1, '' as desc2, coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Transfer To Stock
+select 3 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดออกไปคลัง' as desc1, '' as desc2, -coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Redeem Amount (only redeemed order)
+select 4 as sequence, 'เงินสดรับจากการไถ่ถอน' as desc1, '' as desc2, null as balance
+union
+select 4.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = false
+and l.account_id in (?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Interest Amount (only redeemed order)
+select 5 as sequence, 'เงินสดรับจากดอกเบี้ย' as desc1, '' as desc2, null as balance
+union
+select 5.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem'
+and l.account_id in (?, ?, ?, ?)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Pawn Amount
+select 6 as sequence, 'เงินสดจ่ายจากการรับจำนำ' as desc1, '' as desc2, null as balance
+union
+select 6.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null
+and l.account_id = ?
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Sales (only expired order)
+select 7 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 7.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Redeem Amount (only expired / extended order)
+select 8 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด (เล้า)' as desc1, '' as desc2, null as balance
+union
+select 8.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = true
+and l.account_id in (?, ?, ?, ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Refund (only expired order)
+select 9 as sequence, 'เงินสดจ่ายจากการคืนทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 9.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Other Income (from Cash Register)
+select 10 as sequence, 'เงินสดรับจากรายได้อื่น' as desc1, '' as desc2, null as balance
+union
+select 10.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+UNION
+-- Other Expense (from Cash Register)
+select 11 as sequence, 'เงินสดจ่ายจากรายจ่ายอื่น' as desc1, '' as desc2, null as balance
+union
+select 11.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+--UNION
+-- Adjustment from Accounting Department
+--select 12 as sequence, desc1::varchar, desc2::varchar as desc2, balance
+--from
+--(select 'รายการปรับปรุงเงินสดจากทางฝ่ายบัญชี' as desc1, '' as desc2, -coalesce(sum(l.debit),0) + -coalesce(sum(l.--credit),0) as balance
+--from account_move_line l
+--where l.statement_id is null and l.pawn_order_id is null
+--and l.id not in (select l.id from account_move_line l join account_voucher av on av.move_id = l.move_id)
+--and l.profit_center = (select profit_center from account_journal where id = ?)
+--and l.pawn_shop_id = ?
+--and l.date = ?
+) a
+-- END
+) a
+order by sequence
+
+
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.prepare(JRFillSubreport.java:711)
+	at net.sf.jasperreports.engine.fill.JRFillElementContainer.prepareElements(JRFillElementContainer.java:329)
+	at net.sf.jasperreports.engine.fill.JRFillBand.fill(JRFillBand.java:419)
+	at net.sf.jasperreports.engine.fill.JRFillBand.fill(JRFillBand.java:378)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2038)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillDetail(JRVerticalFiller.java:760)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:270)
 	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
 	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:58)
+	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:417)
+	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:221)
 	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
 	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
 	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
@@ -34,27 +814,424 @@ Caused by: java.lang.IllegalArgumentException: Invalid substring range
 	at java.lang.reflect.Method.invoke(Method.java:606)
 	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
 	... 6 more
+Caused by: net.sf.jasperreports.engine.JRException: Error preparing statement for executing the report query : 
+
+select * from
+(
+-- Beginning Balance
+select 1 as sequence, 'ยอดยกมา'::varchar as desc1, ''::varchar as desc2, coalesce(sum(l.debit),0) - coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_move m on m.id = l.move_id
+where
+-- (l.pawn_order_id is not null or l.statement_id is not null)
+l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date < ?
+and m.ref is not null
+UNION
+-- Transfer from Stock
+select 2 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดเข้าจากคลัง' as desc1, '' as desc2, coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Transfer To Stock
+select 3 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดออกไปคลัง' as desc1, '' as desc2, -coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Redeem Amount (only redeemed order)
+select 4 as sequence, 'เงินสดรับจากการไถ่ถอน' as desc1, '' as desc2, null as balance
+union
+select 4.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = false
+and l.account_id in (?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Interest Amount (only redeemed order)
+select 5 as sequence, 'เงินสดรับจากดอกเบี้ย' as desc1, '' as desc2, null as balance
+union
+select 5.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem'
+and l.account_id in (?, ?, ?, ?)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Pawn Amount
+select 6 as sequence, 'เงินสดจ่ายจากการรับจำนำ' as desc1, '' as desc2, null as balance
+union
+select 6.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null
+and l.account_id = ?
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Sales (only expired order)
+select 7 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 7.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Redeem Amount (only expired / extended order)
+select 8 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด (เล้า)' as desc1, '' as desc2, null as balance
+union
+select 8.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = true
+and l.account_id in (?, ?, ?, ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Refund (only expired order)
+select 9 as sequence, 'เงินสดจ่ายจากการคืนทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 9.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Other Income (from Cash Register)
+select 10 as sequence, 'เงินสดรับจากรายได้อื่น' as desc1, '' as desc2, null as balance
+union
+select 10.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+UNION
+-- Other Expense (from Cash Register)
+select 11 as sequence, 'เงินสดจ่ายจากรายจ่ายอื่น' as desc1, '' as desc2, null as balance
+union
+select 11.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+--UNION
+-- Adjustment from Accounting Department
+--select 12 as sequence, desc1::varchar, desc2::varchar as desc2, balance
+--from
+--(select 'รายการปรับปรุงเงินสดจากทางฝ่ายบัญชี' as desc1, '' as desc2, -coalesce(sum(l.debit),0) + -coalesce(sum(l.--credit),0) as balance
+--from account_move_line l
+--where l.statement_id is null and l.pawn_order_id is null
+--and l.id not in (select l.id from account_move_line l join account_voucher av on av.move_id = l.move_id)
+--and l.profit_center = (select profit_center from account_journal where id = ?)
+--and l.pawn_shop_id = ?
+--and l.date = ?
+) a
+-- END
+) a
+order by sequence
+
+
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createStatement(JRJdbcQueryExecuter.java:266)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:157)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.createQueryDatasource(JRFillDataset.java:684)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.initDatasource(JRFillDataset.java:605)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.setParameters(JRBaseFiller.java:1281)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:901)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.fillSubreport(JRFillSubreport.java:609)
+	at net.sf.jasperreports.engine.fill.JRSubreportRunnable.run(JRSubreportRunnable.java:59)
+	at net.sf.jasperreports.engine.fill.JRThreadSubreportRunner.run(JRThreadSubreportRunner.java:205)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: org.postgresql.util.PSQLException: The column index is out of range: 49, number of columns: 48.
+	at org.postgresql.core.v3.SimpleParameterList.bind(SimpleParameterList.java:53)
+	at org.postgresql.core.v3.SimpleParameterList.setLiteralParameter(SimpleParameterList.java:114)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.bindLiteral(AbstractJdbc2Statement.java:2143)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.setInt(AbstractJdbc2Statement.java:1186)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.setStatementParameter(JRJdbcQueryExecuter.java:407)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.setStatementParameter(JRJdbcQueryExecuter.java:283)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createStatement(JRJdbcQueryExecuter.java:258)
+	... 10 more
 Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
+net.sf.jasperreports.engine.JRRuntimeException: net.sf.jasperreports.engine.JRException: Error preparing statement for executing the report query : 
+
+select * from
+(
+-- Beginning Balance
+select 1 as sequence, 'ยอดยกมา'::varchar as desc1, ''::varchar as desc2, coalesce(sum(l.debit),0) - coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_move m on m.id = l.move_id
+where
+-- (l.pawn_order_id is not null or l.statement_id is not null)
+l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date < ?
+and m.ref is not null
+UNION
+-- Transfer from Stock
+select 2 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดเข้าจากคลัง' as desc1, '' as desc2, coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Transfer To Stock
+select 3 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดออกไปคลัง' as desc1, '' as desc2, -coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Redeem Amount (only redeemed order)
+select 4 as sequence, 'เงินสดรับจากการไถ่ถอน' as desc1, '' as desc2, null as balance
+union
+select 4.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = false
+and l.account_id in (?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Interest Amount (only redeemed order)
+select 5 as sequence, 'เงินสดรับจากดอกเบี้ย' as desc1, '' as desc2, null as balance
+union
+select 5.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem'
+and l.account_id in (?, ?, ?, ?)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Pawn Amount
+select 6 as sequence, 'เงินสดจ่ายจากการรับจำนำ' as desc1, '' as desc2, null as balance
+union
+select 6.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null
+and l.account_id = ?
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Sales (only expired order)
+select 7 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 7.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Redeem Amount (only expired / extended order)
+select 8 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด (เล้า)' as desc1, '' as desc2, null as balance
+union
+select 8.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = true
+and l.account_id in (?, ?, ?, ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Refund (only expired order)
+select 9 as sequence, 'เงินสดจ่ายจากการคืนทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 9.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Other Income (from Cash Register)
+select 10 as sequence, 'เงินสดรับจากรายได้อื่น' as desc1, '' as desc2, null as balance
+union
+select 10.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+UNION
+-- Other Expense (from Cash Register)
+select 11 as sequence, 'เงินสดจ่ายจากรายจ่ายอื่น' as desc1, '' as desc2, null as balance
+union
+select 11.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+--UNION
+-- Adjustment from Accounting Department
+--select 12 as sequence, desc1::varchar, desc2::varchar as desc2, balance
+--from
+--(select 'รายการปรับปรุงเงินสดจากทางฝ่ายบัญชี' as desc1, '' as desc2, -coalesce(sum(l.debit),0) + -coalesce(sum(l.--credit),0) as balance
+--from account_move_line l
+--where l.statement_id is null and l.pawn_order_id is null
+--and l.id not in (select l.id from account_move_line l join account_voucher av on av.move_id = l.move_id)
+--and l.profit_center = (select profit_center from account_journal where id = ?)
+--and l.pawn_shop_id = ?
+--and l.date = ?
+) a
+-- END
+) a
+order by sequence
+
+
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.prepare(JRFillSubreport.java:711)
+	at net.sf.jasperreports.engine.fill.JRFillElementContainer.prepareElements(JRFillElementContainer.java:329)
+	at net.sf.jasperreports.engine.fill.JRFillBand.fill(JRFillBand.java:419)
+	at net.sf.jasperreports.engine.fill.JRFillBand.fill(JRFillBand.java:378)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2038)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillDetail(JRVerticalFiller.java:760)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:270)
 	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
 	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:58)
+	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:417)
+	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:221)
 	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
 	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
 	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
@@ -67,8 +1244,243 @@ java.lang.IllegalArgumentException: Invalid substring range
 	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
 	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
 	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-1    [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
+Caused by: net.sf.jasperreports.engine.JRException: Error preparing statement for executing the report query : 
+
+select * from
+(
+-- Beginning Balance
+select 1 as sequence, 'ยอดยกมา'::varchar as desc1, ''::varchar as desc2, coalesce(sum(l.debit),0) - coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_move m on m.id = l.move_id
+where
+-- (l.pawn_order_id is not null or l.statement_id is not null)
+l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date < ?
+and m.ref is not null
+UNION
+-- Transfer from Stock
+select 2 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดเข้าจากคลัง' as desc1, '' as desc2, coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Transfer To Stock
+select 3 as sequence, desc1::varchar, desc2::varchar as desc2, balance from
+(select 'เงินสดออกไปคลัง' as desc1, '' as desc2, -coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_voucher av on av.move_id = l.move_id
+where av.transfer_id is not null
+and l.account_id = (select default_debit_account_id from account_journal where id = ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?) a
+UNION
+-- Redeem Amount (only redeemed order)
+select 4 as sequence, 'เงินสดรับจากการไถ่ถอน' as desc1, '' as desc2, null as balance
+union
+select 4.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = false
+and l.account_id in (?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Interest Amount (only redeemed order)
+select 5 as sequence, 'เงินสดรับจากดอกเบี้ย' as desc1, '' as desc2, null as balance
+union
+select 5.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem'
+and l.account_id in (?, ?, ?, ?)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Pawn Amount
+select 6 as sequence, 'เงินสดจ่ายจากการรับจำนำ' as desc1, '' as desc2, null as balance
+union
+select 6.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null
+and l.account_id = ?
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Sales (only expired order)
+select 7 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 7.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Redeem Amount (only expired / extended order)
+select 8 as sequence, 'เงินสดรับจากการขายทรัพย์หลุด (เล้า)' as desc1, '' as desc2, null as balance
+union
+select 8.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, coalesce(sum(l.credit),0) - coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'redeem' and pw.extended = true
+and l.account_id in (?, ?, ?, ?)
+and l.journal_id = ?
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Refund (only expired order)
+select 9 as sequence, 'เงินสดจ่ายจากการคืนทรัพย์หลุด' as desc1, '' as desc2, null as balance
+union
+select 9.1 as sequence, desc1::varchar, ap.name::varchar as desc2, balance from
+(select '' as desc1, pw.period_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join pawn_order pw on pw.id = l.pawn_order_id
+where l.pawn_order_id is not null and pw.state = 'expire'
+and l.account_id = ?
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by pw.period_id
+order by pw.period_id) a
+join account_period ap on ap.id = a.period_id
+where a.balance != 0
+UNION
+-- Other Income (from Cash Register)
+select 10 as sequence, 'เงินสดรับจากรายได้อื่น' as desc1, '' as desc2, null as balance
+union
+select 10.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, coalesce(sum(l.credit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+UNION
+-- Other Expense (from Cash Register)
+select 11 as sequence, 'เงินสดจ่ายจากรายจ่ายอื่น' as desc1, '' as desc2, null as balance
+union
+select 11.1 as sequence, desc1::varchar, ac.name::varchar as desc2, balance from
+(select '' as desc1, l.account_id, -coalesce(sum(l.debit),0) as balance
+from account_move_line l
+join account_bank_statement st on st.id = l.statement_id
+join account_journal aj on aj.id = st.journal_id
+where l.statement_id is not null and st.state = 'confirm'
+and l.account_id not in (aj.default_credit_account_id, aj.default_debit_account_id)
+and l.profit_center = (select profit_center from account_journal where id = ?)
+and l.pawn_shop_id = ?
+and l.date = ?
+group by l.account_id
+order by l.account_id) a
+join account_account ac on ac.id = a.account_id
+where a.balance != 0
+--UNION
+-- Adjustment from Accounting Department
+--select 12 as sequence, desc1::varchar, desc2::varchar as desc2, balance
+--from
+--(select 'รายการปรับปรุงเงินสดจากทางฝ่ายบัญชี' as desc1, '' as desc2, -coalesce(sum(l.debit),0) + -coalesce(sum(l.--credit),0) as balance
+--from account_move_line l
+--where l.statement_id is null and l.pawn_order_id is null
+--and l.id not in (select l.id from account_move_line l join account_voucher av on av.move_id = l.move_id)
+--and l.profit_center = (select profit_center from account_journal where id = ?)
+--and l.pawn_shop_id = ?
+--and l.date = ?
+) a
+-- END
+) a
+order by sequence
+
+
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createStatement(JRJdbcQueryExecuter.java:266)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:157)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.createQueryDatasource(JRFillDataset.java:684)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.initDatasource(JRFillDataset.java:605)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.setParameters(JRBaseFiller.java:1281)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:901)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.fillSubreport(JRFillSubreport.java:609)
+	at net.sf.jasperreports.engine.fill.JRSubreportRunnable.run(JRSubreportRunnable.java:59)
+	at net.sf.jasperreports.engine.fill.JRThreadSubreportRunner.run(JRThreadSubreportRunner.java:205)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: org.postgresql.util.PSQLException: The column index is out of range: 49, number of columns: 48.
+	at org.postgresql.core.v3.SimpleParameterList.bind(SimpleParameterList.java:53)
+	at org.postgresql.core.v3.SimpleParameterList.setLiteralParameter(SimpleParameterList.java:114)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.bindLiteral(AbstractJdbc2Statement.java:2143)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.setInt(AbstractJdbc2Statement.java:1186)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.setStatementParameter(JRJdbcQueryExecuter.java:407)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.setStatementParameter(JRJdbcQueryExecuter.java:283)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createStatement(JRJdbcQueryExecuter.java:258)
+	... 10 more
+1    [XML-RPC-0] ERROR net.sf.jasperreports.engine.fill.JRFillSubreport - Fill 766139611: exception
+net.sf.jasperreports.engine.JRException: Error executing SQL statement for : pawn_op_cash_report_subreport1
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:169)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.createQueryDatasource(JRFillDataset.java:684)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.initDatasource(JRFillDataset.java:605)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.setParameters(JRBaseFiller.java:1281)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:901)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.fillSubreport(JRFillSubreport.java:609)
+	at net.sf.jasperreports.engine.fill.JRSubreportRunnable.run(JRSubreportRunnable.java:59)
+	at net.sf.jasperreports.engine.fill.JRThreadSubreportRunner.run(JRThreadSubreportRunner.java:205)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: org.postgresql.util.PSQLException: ERROR: operator does not exist: integer = record
+  Hint: No operator matches the given name and argument type(s). You might need to add explicit type casts.
+  Position: 409
+	at org.postgresql.core.v3.QueryExecutorImpl.receiveErrorResponse(QueryExecutorImpl.java:2062)
+	at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:1795)
+	at org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:257)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.execute(AbstractJdbc2Statement.java:479)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.executeWithFlags(AbstractJdbc2Statement.java:367)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.executeQuery(AbstractJdbc2Statement.java:271)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:163)
+	... 9 more
+4    [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: net.sf.jasperreports.engine.JRException: Error executing SQL statement for : pawn_op_cash_report_subreport1
+org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: net.sf.jasperreports.engine.JRException: Error executing SQL statement for : pawn_op_cash_report_subreport1
 	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
 	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
 	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
@@ -76,26 +1488,20 @@ org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method exec
 	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
 	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
 	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
+Caused by: net.sf.jasperreports.engine.JRRuntimeException: net.sf.jasperreports.engine.JRException: Error executing SQL statement for : pawn_op_cash_report_subreport1
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.prepare(JRFillSubreport.java:711)
+	at net.sf.jasperreports.engine.fill.JRFillElementContainer.prepareElements(JRFillElementContainer.java:329)
+	at net.sf.jasperreports.engine.fill.JRFillBand.fill(JRFillBand.java:419)
+	at net.sf.jasperreports.engine.fill.JRFillBand.fill(JRFillBand.java:378)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2038)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillDetail(JRVerticalFiller.java:760)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:270)
 	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
 	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:58)
+	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:417)
+	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:221)
 	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
 	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
 	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
@@ -103,27 +1509,43 @@ Caused by: java.lang.IllegalArgumentException: Invalid substring range
 	at java.lang.reflect.Method.invoke(Method.java:606)
 	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
 	... 6 more
+Caused by: net.sf.jasperreports.engine.JRException: Error executing SQL statement for : pawn_op_cash_report_subreport1
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:169)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.createQueryDatasource(JRFillDataset.java:684)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.initDatasource(JRFillDataset.java:605)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.setParameters(JRBaseFiller.java:1281)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:901)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.fillSubreport(JRFillSubreport.java:609)
+	at net.sf.jasperreports.engine.fill.JRSubreportRunnable.run(JRSubreportRunnable.java:59)
+	at net.sf.jasperreports.engine.fill.JRThreadSubreportRunner.run(JRThreadSubreportRunner.java:205)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: org.postgresql.util.PSQLException: ERROR: operator does not exist: integer = record
+  Hint: No operator matches the given name and argument type(s). You might need to add explicit type casts.
+  Position: 409
+	at org.postgresql.core.v3.QueryExecutorImpl.receiveErrorResponse(QueryExecutorImpl.java:2062)
+	at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:1795)
+	at org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:257)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.execute(AbstractJdbc2Statement.java:479)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.executeWithFlags(AbstractJdbc2Statement.java:367)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.executeQuery(AbstractJdbc2Statement.java:271)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:163)
+	... 9 more
 Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
+net.sf.jasperreports.engine.JRRuntimeException: net.sf.jasperreports.engine.JRException: Error executing SQL statement for : pawn_op_cash_report_subreport1
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.prepare(JRFillSubreport.java:711)
+	at net.sf.jasperreports.engine.fill.JRFillElementContainer.prepareElements(JRFillElementContainer.java:329)
+	at net.sf.jasperreports.engine.fill.JRFillBand.fill(JRFillBand.java:419)
+	at net.sf.jasperreports.engine.fill.JRFillBand.fill(JRFillBand.java:378)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2038)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillDetail(JRVerticalFiller.java:760)
+	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:270)
 	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
 	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:58)
+	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:417)
+	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:221)
 	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
 	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
 	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
@@ -136,762 +1558,25 @@ java.lang.IllegalArgumentException: Invalid substring range
 	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
 	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
 	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-5121 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-1    [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-14044 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-28314 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-43979 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-69903 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-102200 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-112962 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-986810 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-1145577 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-1200148 [XML-RPC-0] ERROR org.apache.xmlrpc.server.XmlRpcErrorLogger - Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-org.apache.xmlrpc.common.XmlRpcInvocationException: Failed to invoke method execute in class com.nantic.jasperreports.JasperServer: Invalid substring range
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:129)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
-Caused by: java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	... 6 more
-Caused by:
-java.lang.IllegalArgumentException: Invalid substring range
-	at java.text.AttributedString.addAttributes(AttributedString.java:376)
-	at net.sf.jasperreports.engine.util.JRStyledText.getAttributedString(JRStyledText.java:157)
-	at net.sf.jasperreports.engine.util.JRStyledTextParser.write(JRStyledTextParser.java:299)
-	at net.sf.jasperreports.engine.util.JEditorPaneHtmlMarkupProcessor.convert(JEditorPaneHtmlMarkupProcessor.java:248)
-	at net.sf.jasperreports.engine.fill.JRFillTextElement.processMarkupText(JRFillTextElement.java:1500)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluateText(JRFillTextField.java:402)
-	at net.sf.jasperreports.engine.fill.JRFillTextField.evaluate(JRFillTextField.java:368)
-	at net.sf.jasperreports.engine.fill.JRFillElementContainer.evaluate(JRFillElementContainer.java:258)
-	at net.sf.jasperreports.engine.fill.JRFillBand.evaluate(JRFillBand.java:499)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillColumnBand(JRVerticalFiller.java:2036)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeader(JRVerticalFiller.java:621)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillGroupHeaders(JRVerticalFiller.java:543)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReportStart(JRVerticalFiller.java:268)
-	at net.sf.jasperreports.engine.fill.JRVerticalFiller.fillReport(JRVerticalFiller.java:128)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:946)
-	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:864)
-	at net.sf.jasperreports.engine.fill.JRFiller.fillReport(JRFiller.java:84)
-	at net.sf.jasperreports.engine.JasperFillManager.fillReport(JasperFillManager.java:624)
-	at com.nantic.jasperreports.JasperServer.privateExecute(JasperServer.java:211)
-	at com.nantic.jasperreports.JasperServer.execute(JasperServer.java:120)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:606)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.invoke(ReflectiveXmlRpcHandler.java:115)
-	at org.apache.xmlrpc.server.ReflectiveXmlRpcHandler.execute(ReflectiveXmlRpcHandler.java:106)
-	at org.apache.xmlrpc.server.XmlRpcServerWorker.execute(XmlRpcServerWorker.java:46)
-	at org.apache.xmlrpc.server.XmlRpcServer.execute(XmlRpcServer.java:86)
-	at org.apache.xmlrpc.server.XmlRpcStreamServer.execute(XmlRpcStreamServer.java:200)
-	at org.apache.xmlrpc.webserver.Connection.run(Connection.java:208)
-	at org.apache.xmlrpc.util.ThreadPool$Poolable$1.run(ThreadPool.java:68)
+Caused by: net.sf.jasperreports.engine.JRException: Error executing SQL statement for : pawn_op_cash_report_subreport1
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:169)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.createQueryDatasource(JRFillDataset.java:684)
+	at net.sf.jasperreports.engine.fill.JRFillDataset.initDatasource(JRFillDataset.java:605)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.setParameters(JRBaseFiller.java:1281)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:901)
+	at net.sf.jasperreports.engine.fill.JRBaseFiller.fill(JRBaseFiller.java:845)
+	at net.sf.jasperreports.engine.fill.JRFillSubreport.fillSubreport(JRFillSubreport.java:609)
+	at net.sf.jasperreports.engine.fill.JRSubreportRunnable.run(JRSubreportRunnable.java:59)
+	at net.sf.jasperreports.engine.fill.JRThreadSubreportRunner.run(JRThreadSubreportRunner.java:205)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: org.postgresql.util.PSQLException: ERROR: operator does not exist: integer = record
+  Hint: No operator matches the given name and argument type(s). You might need to add explicit type casts.
+  Position: 409
+	at org.postgresql.core.v3.QueryExecutorImpl.receiveErrorResponse(QueryExecutorImpl.java:2062)
+	at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:1795)
+	at org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:257)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.execute(AbstractJdbc2Statement.java:479)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.executeWithFlags(AbstractJdbc2Statement.java:367)
+	at org.postgresql.jdbc2.AbstractJdbc2Statement.executeQuery(AbstractJdbc2Statement.java:271)
+	at net.sf.jasperreports.engine.query.JRJdbcQueryExecuter.createDatasource(JRJdbcQueryExecuter.java:163)
+	... 9 more

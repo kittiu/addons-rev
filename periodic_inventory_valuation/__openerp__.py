@@ -38,7 +38,7 @@ To generate journal items per period inventory valuation
     "depends": [
         "account", 
         "product", 
-        "stock"
+        "stock",
     ], 
     "demo": [], 
     "data": [

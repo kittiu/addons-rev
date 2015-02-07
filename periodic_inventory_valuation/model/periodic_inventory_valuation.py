@@ -89,6 +89,7 @@ class periodic_inventory_valuation(osv.osv):
         'aml_ids': fields.many2many('account.move.line', 'piv_aml_rel', 'aml_id', 'piv_id', 'Account Move Lines', help='Account Move Lines to be Created to Valuate Inventory'),
         'pivl_ids': fields.one2many('periodic.inventory.valuation.line', 'piv_id', 'Periodic Inventory Valuation Lines', help='Periodic Inventory Valuation Lines created to valuate Inventory'),
         'first': fields.boolean('First run'),
+        'sample_product_ids': fields.many2many('product.product', 'sample_piv_prod_rel', 'piv_id', 'product_id', 'Sample Products')
     }
     _defaults = {
         'state': 'draft',
@@ -101,21 +102,30 @@ class periodic_inventory_valuation(osv.osv):
         s.pool.get('res.users').browse(c, u, u, context=ctx).company_id.inventory_valuation_journal_id.id,
     }
 
-    def get_period(self, cr, uid, ids, date, context=None):
+#     def get_period(self, cr, uid, ids, date, context=None):
+#         if context is None:
+#             context = {}
+# 
+#         period_obj = self.pool.get('account.period')
+#         period_ids = period_obj.find(cr, uid, dt=date, context=context)
+#         period_ids = period_obj.search(cr, uid, [
+#             ('id', 'in', period_ids), ('special', '=', False)], context=context)
+#         period_ids = period_ids and period_ids[0] or False
+#         if not period_ids:
+#             raise osv.except_osv(_('Error!'), _('There is no fiscal year defined for this date.\nPlease create one from the configuration of the accounting menu.'))
+# 
+#         return period_ids
+    
+    def get_date(self, cr, uid, period_id, context=None):
         if context is None:
             context = {}
 
         period_obj = self.pool.get('account.period')
-        period_ids = period_obj.find(cr, uid, dt=date, context=context)
-        period_ids = period_obj.search(cr, uid, [
-            ('id', 'in', period_ids), ('special', '=', False)], context=context)
-        period_ids = period_ids and period_ids[0] or False
-        if not period_ids:
-            raise osv.except_osv(_('Error!'), _('There is no fiscal year defined for this date.\nPlease create one from the configuration of the accounting menu.'))
+        period = period_obj.browse(cr, uid, period_id, context=context)
 
-        return period_ids
+        return period and period.date_stop or False
 
-    def exchange(self, cr, uid, ids, from_amount, to_currency_id, from_currency_id, exchange_date, context=None):
+    def exchange(self, cr, uid, ids, from_amount, from_currency_id, to_currency_id, exchange_date, context=None):
         if context is None:
             context = {}
         if from_currency_id == to_currency_id:
@@ -155,10 +165,11 @@ class periodic_inventory_valuation(osv.osv):
 
         if brw_per_inv.state == 'done':
             raise osv.except_osv('Can not write the record', 'When a stock is done, can not be write')
-
-        self.validate_data(cr, uid, ids, brw_per_inv.date, context=context)
-
-        vals['period_id'] = self.get_period(cr, uid, ids, vals.get('date'), context=context)
+        
+        if vals.get('period_id', False):
+            vals['date'] = self.get_date(cr, uid, vals.get('period_id'), context=context)
+            self.validate_data(cr, uid, ids, vals['date'], context=context)
+        #vals['period_id'] = self.get_period(cr, uid, ids, vals.get('date'), context=context)
         return super(periodic_inventory_valuation, self).write(cr, uid, ids, vals, context=context)
 
     def create(self, cr, uid, vals, context=None):
@@ -169,8 +180,9 @@ class periodic_inventory_valuation(osv.osv):
         if not inv.id:
             raise osv.except_osv('You need to define the journal', 'Must be defined in the company the journal to generate the journal items for periodic inventory')
 
-        self.validate_data(cr, uid, False, vals.get('date'), context=context)
-        vals['period_id'] = self.get_period(cr, uid, False, vals.get('date'), context=context)
+        vals['date'] = self.get_date(cr, uid, vals.get('period_id'), context=context)
+        self.validate_data(cr, uid, False, vals['date'], context=context)
+        #vals['period_id'] = self.get_period(cr, uid, False, vals.get('date'), context=context)
         return super(periodic_inventory_valuation, self).create(cr, uid, vals, context=context)
 
     def unlink(self, cr, uid, ids, context=None):
@@ -178,8 +190,8 @@ class periodic_inventory_valuation(osv.osv):
             context = {}
         brw_per_inv = self.browse(cr, uid, ids[0], context=context)
 
-        if brw_per_inv.state == 'done':
-            raise osv.except_osv('Can not delete the record', 'When a stock is done, can not be deleted')
+#         if brw_per_inv.state == 'done':
+#             raise osv.except_osv('Can not delete the record', 'When a stock is done, can not be deleted')
 
         return super(periodic_inventory_valuation, self).unlink(cr, uid, ids, context=context)
 
@@ -187,20 +199,23 @@ class periodic_inventory_valuation(osv.osv):
         context = context or {}
         ids = isinstance(ids, (int, long)) and [ids] or ids
         prod_obj = self.pool.get('product.product')
-
-        prod_ids = prod_obj.search(cr, uid, [
-            ('type', '=', 'product'), ('valuation', '=', 'manual_periodic'),
-        ], context=context)
-
-        period_obj = self.pool.get('account.period')
         piv_brw = self.browse(cr, uid, ids[0], context=context)
-        date = piv_brw.date
+
+        where = [('type', '=', 'product'), ('valuation', '=', 'manual_periodic'),]
+        
+        if piv_brw.sample_product_ids:
+            where.append(('id', 'in', [x.id for x in piv_brw.sample_product_ids]))
+        
+        prod_ids = prod_obj.search(cr, uid, where, context=context)
+        period_obj = self.pool.get('account.period')
+        period_id = piv_brw.period_id.id
+        period_brw = period_obj.browse(cr, uid, period_id, context=context)
+        
         company_id = piv_brw.company_id.id
         currency_id = piv_brw.currency_id.id
 
         inventory_valuation_journal_id = piv_brw.company_id.inventory_valuation_journal_id.id
 
-        period_id = piv_brw.period_id.id
 
         inv_obj = self.pool.get('account.invoice')
 
@@ -210,28 +225,26 @@ class periodic_inventory_valuation(osv.osv):
         else:
             piv_id = self.search(cr, uid, [('id', '!=', ids), ('state', '=', 'done')], order='id desc', limit=1, context=context)
 
-        piv = self.browse(cr, uid, ids[0], context=context)
-        fecha_now = datetime.datetime.strptime(piv.date, '%Y-%m-%d')
+        date_stop = period_brw.date_stop
+        prev_date_stop = False
 
         if piv_id:
             piv_id = piv_id[0]
             piv_before = self.browse(cr, uid, piv_id, context=context)
-            fecha_before = datetime.datetime.strptime(piv_before.date, '%Y-%m-%d')
-        else:
-            fecha_before = False
+            prev_date_stop = piv_before.period_id.date_stop
 
         inv_ids = []
 
-        if fecha_before:
+        if prev_date_stop:
             inv_ids = inv_obj.search(cr, uid, [
                 ('state', 'in', ('open', 'paid')),
-                ('date_invoice', '>', fecha_before), ('date_invoice', '<=', fecha_now),
+                ('date_invoice', '>', prev_date_stop), ('date_invoice', '<=', date_stop),
                 ('company_id', '=', company_id)
             ], context=context)
         else:
             inv_ids = inv_obj.search(cr, uid, [
                 ('state', 'in', ('open', 'paid')),
-                ('date_invoice', '<=', fecha_now),
+                ('date_invoice', '<=', date_stop),
                 ('company_id', '=', company_id)
             ], context=context)
 
@@ -244,25 +257,43 @@ class periodic_inventory_valuation(osv.osv):
         if not ail_ids:
             raise osv.except_osv(_('Error!'), _('There are no invoices lines defined for this period.\nMake sure you are using the right date.'))
 
-        period_brw = period_obj.browse(cr, uid, period_id, context=context)
-        date_start = period_brw.date_start
-        date_stop = period_brw.date_stop
-
         sl_obj = self.pool.get('stock.location')
         int_sl_ids = sl_obj.search(cr, uid, [('usage', '=', 'internal')], context=context)
         ext_sl_ids = sl_obj.search(cr, uid, [('usage', '!=', 'internal')], context=context)
 
         sm_obj = self.pool.get('stock.move')
-        incoming_sm_ids = sm_obj.search(cr, uid, [
-            ('state', '=', 'done'), ('company_id', '=', company_id),
-            ('location_id', 'in', ext_sl_ids), ('location_dest_id', 'in', int_sl_ids),
-            ('date', '>=', date_start), ('date', '<=', date_stop),
-        ], context=context)
-        outgoing_sm_ids = sm_obj.search(cr, uid, [
-            ('state', '=', 'done'), ('company_id', '=', company_id),
-            ('location_id', 'in', int_sl_ids), ('location_dest_id', 'in', ext_sl_ids),
-            ('date', '>=', date_start), ('date', '<=', date_stop),
-        ], context=context)
+        
+        where_in = []
+        where_out = []
+        if prev_date_stop:
+            where_in = [
+                ('state', '=', 'done'), ('company_id', '=', company_id),
+                ('location_id', 'in', ext_sl_ids), ('location_dest_id', 'in', int_sl_ids),
+                ('date', '>', prev_date_stop), ('date', '<=', date_stop),
+            ]
+            where_out = [
+                ('state', '=', 'done'), ('company_id', '=', company_id),
+                ('location_id', 'in', int_sl_ids), ('location_dest_id', 'in', ext_sl_ids),
+                ('date', '>', prev_date_stop), ('date', '<=', date_stop),
+            ]
+        else:
+            where_in = [
+                ('state', '=', 'done'), ('company_id', '=', company_id),
+                ('location_id', 'in', ext_sl_ids), ('location_dest_id', 'in', int_sl_ids),
+                ('date', '<=', date_stop),
+            ]
+            where_out = [
+                ('state', '=', 'done'), ('company_id', '=', company_id),
+                ('location_id', 'in', int_sl_ids), ('location_dest_id', 'in', ext_sl_ids),
+                ('date', '<=', date_stop),
+            ]
+            
+        if piv_brw.sample_product_ids:
+            where_in.append(('product_id', 'in', [x.id for x in piv_brw.sample_product_ids]))
+            where_out.append(('product_id', 'in', [x.id for x in piv_brw.sample_product_ids]))
+        
+        incoming_sm_ids = sm_obj.search(cr, uid, where_in, context=context)
+        outgoing_sm_ids = sm_obj.search(cr, uid, where_out, context=context)
 
         # Se establecen parametros para usar en los calculos
         periodic_line = self.pool.get('periodic.inventory.valuation.line')
@@ -273,7 +304,7 @@ class periodic_inventory_valuation(osv.osv):
         # Si no se han hecho calculos, se cargan datos iniciales, aqui la condicion deberia ser si el estado es draft
         # Se debe validar que si es el primer registro cargar datos en 0, si no es el primer registro entonces tomar
         # valores del ultimo registro
-        if not piv.first:
+        if not piv_brw.first:
             state = 'confirm'
 
             pivline_init_ids = []
@@ -330,7 +361,7 @@ class periodic_inventory_valuation(osv.osv):
 
                     produc_obj = prod_obj.browse(cr, uid, ail.product_id.id, context=context)
 
-                    price_unit = self.exchange(cr, uid, ids, ail.price_unit, ail.invoice_id.currency_id.id, currency_id, date, context=context)
+                    price_unit = self.exchange(cr, uid, ids, ail.price_unit, ail.invoice_id.currency_id.id, currency_id, date_stop, context=context)
 
                     if ail.invoice_id.type == 'in_invoice':
                         p_p_pur = {'qty': ail.quantity, 'price': price_unit}
@@ -391,42 +422,43 @@ class periodic_inventory_valuation(osv.osv):
                 debit = journal_item > 0 and journal_item or 0.0
                 credit = journal_item < 0 and (journal_item * -1) or 0.0
 
-                if journal_item != 0:
-                    if prod.property_account_expense:
-                        account_expense = prod.property_account_expense
-                    else:
-                        account_expense = prod.product_tmpl_id.categ_id.property_account_expense_categ
-
-                    account_income = prod.product_tmpl_id.categ_id.property_stock_valuation_account_id
-
-                    if not account_expense or not account_income:
-                        raise osv.except_osv(_('Error!'), _('Product Account.\nThere are no accounts defined for the product %s.' % (prod.name)))
-
-                    context['journal_id'] = inventory_valuation_journal_id
-                    context['period_id'] = period_id
-                    move_line = {
-                        'name': 'GANANCIA O PERDIDA DE INVENTARIO',
-                        'partner_id': False,
-                        'product_id': prod.id,
-                        'account_id': account_income.id,
-                        'move_id': False,
-                        'journal_id': inventory_valuation_journal_id,
-                        'period_id': period_id,
-                        'date': date_stop,
-                        'debit': debit,
-                        'credit': credit,
-                    }
-
-                    line_id = self.pool.get('account.move.line').create(cr, uid, move_line, context=context)
-                    lineas.append(line_id)
-
-                    move_line['account_id'] = account_expense.id
-                    move_line['debit'] = credit
-                    move_line['credit'] = debit
-
-                    line_id = self.pool.get('account.move.line').create(cr, uid, move_line, context=context)
-                    lineas.append(line_id)
-
+# kittiu: remove account posting
+#                 if journal_item != 0:
+#                     if prod.property_account_expense:
+#                         account_expense = prod.property_account_expense
+#                     else:
+#                         account_expense = prod.product_tmpl_id.categ_id.property_account_expense_categ
+# 
+#                     account_income = prod.product_tmpl_id.categ_id.property_stock_valuation_account_id
+# 
+#                     if not account_expense or not account_income:
+#                         raise osv.except_osv(_('Error!'), _('Product Account.\nThere are no accounts defined for the product %s.' % (prod.name)))
+# 
+#                     context['journal_id'] = inventory_valuation_journal_id
+#                     context['period_id'] = period_id
+#                     move_line = {
+#                         'name': _('Profit/Loss from Inventroy'),
+#                         'partner_id': False,
+#                         'product_id': prod.id,
+#                         'account_id': account_income.id,
+#                         'move_id': False,
+#                         'journal_id': inventory_valuation_journal_id,
+#                         'period_id': period_id,
+#                         'date': date_stop,
+#                         'debit': debit,
+#                         'credit': credit,
+#                     }
+# 
+#                     line_id = self.pool.get('account.move.line').create(cr, uid, move_line, context=context)
+#                     lineas.append(line_id)
+# 
+#                     move_line['account_id'] = account_expense.id
+#                     move_line['debit'] = credit
+#                     move_line['credit'] = debit
+# 
+#                     line_id = self.pool.get('account.move.line').create(cr, uid, move_line, context=context)
+#                     lineas.append(line_id)
+# 
                 periodic_line.write(cr, uid, val_line.id, {
                     'average_cost': costo_promedio,
                     'valuation': valuation,
@@ -434,16 +466,16 @@ class periodic_inventory_valuation(osv.osv):
                     'qty_purchase': qty_pur,
                     'qty_final': inventario_final,
                 })
-            ##############################################################
-            if lineas:
-                move_id = self.pool.get('account.move.line').browse(cr, uid, lineas[0], context=context).move_id.id
-            else:
-                move_id = False
+#             ##############################################################
+#             if lineas:
+#                 move_id = self.pool.get('account.move.line').browse(cr, uid, lineas[0], context=context).move_id.id
+#             else:
+#                 move_id = False
 
         self.write(cr, uid, ids[0], {
             'product_ids': [(6, 0, prod_ids)],
             'ail_ids': [(6, 0, ail_ids)],
-            'date': date or fields.date.today(),
+            'date': date_stop,
             'stock_move_ids': [(6, 0, incoming_sm_ids + outgoing_sm_ids)],
             'first': True,
             'aml_ids': [(6, 0, lineas)],

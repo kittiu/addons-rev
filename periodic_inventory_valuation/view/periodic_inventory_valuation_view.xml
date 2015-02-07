@@ -20,7 +20,15 @@
                     </header>
                     <h2><label for="name"/></h2> 
                     <field name="name" nolabel="1"/>
-                    <field name="date" required="1"/>
+                    <group>
+                    	<group>
+                    		<field name="period_id" required="1"/>
+                    	</group>
+                    	<group>
+                    		<field name="date" readonly="1"/>
+                    	</group>
+                    </group>
+                    <group><field name="sample_product_ids" widget="many2many_tags" class="oe_inline" /></group>
                     <notebook>
                         <page string='Products to Valuate'>
                             <field name='product_ids' nolabel='1' readonly='1'>
@@ -60,7 +68,7 @@
                                 </tree>
                             </field>
                         </page>
-                        <page string='Accounting Entries'>
+                        <page string='Accounting Entries' invisible="1">
                             <field name='aml_ids' nolabel='1' readonly='1'/>
                         </page>
                         <page string='Other Info'>
@@ -69,8 +77,6 @@
                                     <field name='move_id' readonly='1'/>
                                     <field name='inventory_valuation_journal_id' readonly='1'
                                         domain="[('type','=','general'),('company_id','=',company_id)]"/>
-                                    <field name='period_id' readonly='1' 
-                                        domain="[('company_id','=',company_id)]"/>
                                 </group>
                                 <group>
                                     <field name='company_id' required='1'/>
