@@ -53,7 +53,7 @@
                     <group string="Periods to Include">
                         <field name="period_ids" 
                          nolabel="1" 
-                        domain="[('fiscalyear_id','=',fiscalyear_id),('special','=',False),('company_id','=',company_id)]"
+                        domain="[('fiscalyear_id','=',fiscalyear_id),('company_id','=',company_id)]"
                         attrs="{'readonly':[('columns','in',('qtr','thirteen'))],}" >
                             <tree>
                                 <field name='code'/>
