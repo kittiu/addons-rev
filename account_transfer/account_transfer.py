@@ -166,10 +166,15 @@ class account_transfer(osv.osv):
         return res
 
     def action_confirm(self, cr, uid, ids, context=None):
+        if context == None:
+            context = {}
         voucher_obj = self.pool.get('account.voucher')
         for trans in self.browse(cr, uid, ids, context=context):
             sval = {}
             dval = {}
+            ctx = context.copy()
+            periods = self.pool.get('account.period').find(cr, uid, dt=trans.date)
+            ctx['period_id'] = periods and periods[0] or False
             sval['date'] = trans.date
             dval['date'] = trans.date
             sval['transfer_id'] = trans.id
@@ -207,8 +212,8 @@ class account_transfer(osv.osv):
                 dval['partner_id'] = trans.dst_have_partner and trans.dst_partner_id.id or trans.company_id.partner_id.id
                 sval['line_ids'][0][2]['account_id'] = dval['line_ids'][0][2]['account_id'] = trans.src_journal_id.account_transit.id
                 # import pdb; pdb.set_trace()
-                voucher_obj.create(cr, uid, dval, context=context)
-            voucher_obj.create(cr, uid, sval, context=context)
+                voucher_obj.create(cr, uid, dval, context=ctx)
+            voucher_obj.create(cr, uid, sval, context=ctx)
         return self.write(cr, uid, ids, {'state': 'confirm'}, context=context)
 
     def action_done(self, cr, uid, ids, context=None):
@@ -225,7 +230,7 @@ class account_transfer(osv.osv):
                 # paid_amount.append(sign * voucher.paid_amount_in_company_currency)
             sum_amount = sum(paid_amount)
             if len(paid_amount) > 1 and sum_amount != 0.0:
-                periods = self.pool.get('account.period').find(cr, uid)
+                periods = self.pool.get('account.period').find(cr, uid, dt=trans.date)
                 move = {}
                 move['journal_id'] = trans.dst_journal_id.id
                 move['period_id'] = periods and periods[0] or False
