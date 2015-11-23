@@ -34,7 +34,7 @@ class product_item(osv.osv):
         'product_id': fields.many2one('product.product', 'Bundle Product', ondelete='cascade', required=True),
         'item_id': fields.many2one('product.product', 'Item', required=True),
         'uom_id': fields.many2one('product.uom', 'UoM', required=True),
-        'qty_uom': fields.integer('Quantity', required=True),
+        'qty_uom': fields.float('Quantity', required=True),
         #'editable': fields.boolean('Allow changes in DO ?', help="Allow the user to change this item (quantity or item itself) in the Delivery Orders."),
     }
     _defaults = {
