@@ -86,7 +86,7 @@ class ZbExcelExport(ExcelExport):
         data = fp.read()
         fp.close()
         return data
-    
+
     @openerpweb.httprequest
     def index(self, req, data, token):
         data = json.loads(data)
@@ -107,14 +107,14 @@ class ExportPdf(Export):
         'label': 'PDF',
         'error': None
     }
-    
+
     @property
     def content_type(self):
         return 'application/pdf'
-    
+
     def filename(self, base):
         return base + '.pdf'
-    
+
     def from_data(self, uid, fields, rows, company_name):
         pageSize=[210.0,297.0]
         new_doc = etree.Element("report")
@@ -161,15 +161,15 @@ class ExportPdf(Export):
                     col.text = tools.ustr(value)
                 j += 1
         transform = etree.XSLT(
-            etree.parse(os.path.join(tools.config['root_path'],
-                                     'addons/base/report/custom_new.xsl')))
+            etree.parse(os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                     'custom_new.xsl')))
         rml = etree.tostring(transform(new_doc))
         self.obj = trml2pdf.parseNode(rml, title='Printscreen')
         return self.obj
 
 class ZbPdfExport(ExportPdf):
     _cp_path = '/web/export/zb_pdf_export'
-    
+
     @openerpweb.httprequest
     def index(self, req, data, token):
         data = json.loads(data)
