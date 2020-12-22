@@ -635,7 +635,7 @@ class _rml_flowable(object):
                 txt_n.text = utils.xml2str(self._textual(n))
             txt_n.tail = n.tail and utils.xml2str(utils._process_text(self, n.tail.replace('\n',''))) or ''
             rc1 += etree.tostring(txt_n)
-        return rc1
+        return rc1.replace('\n',' ')
 
     def _table(self, node):
         children = utils._child_get(node,self,'tr')
